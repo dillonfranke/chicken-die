@@ -75,11 +75,16 @@ class Player:
     def __init__(self, name):
         self.name = name
         self.hand = []
-        self.flock = {"Chicks": 3, "Hens": 0}
+        self.flock = {"Chicks": 3, "Hens": 0, "Robo-Hens": 0, "Decoy-Chicks": 0}
         self.eggs = 1
+        self.infertile_hens = 0
 
     def __repr__(self):
-        return f"Player(name='{self.name}', hand_size={len(self.hand)}, chicks={self.flock['Chicks']}, hens={self.flock['Hens']}, eggs={self.eggs})"
+        flock_str = ", ".join(f"{k.lower()[:-1]}s={v}" for k, v in self.flock.items())
+        return f"Player(name='{self.name}', hand_size={len(self.hand)}, {flock_str}, eggs={self.eggs})"
+
+    def total_chickens(self):
+        return sum(self.flock.values())
 
 class Game:
     def __init__(self, num_players=4, silent_deck=False):
@@ -93,6 +98,8 @@ class Game:
         # Game state flags
         self.drought_active = False
         self.drought_player_index = -1
+        self.reverse_direction = False
+        self.skip_roll = False
 
         # Game resources
         self.chick_supply = 10
@@ -126,12 +133,12 @@ class Game:
                 print(f"\n--- Turn {self.turn} ---")
                 print(f"Supply: {self.chick_supply} Chicks, {self.hen_supply} Hens | Graveyard: {len(self.graveyard)}")
                 for p in self.players:
-                    print(f"  {p.name}: {p.flock['Chicks']} Chicks, {p.flock['Hens']} Hens, {p.eggs} Eggs, {len(p.hand)} Cards")
+                    print(f"  {p}")
 
             current_player = self.players[self.current_player_index]
             self.take_turn(current_player, silent)
             
-            active_players = [p for p in self.players if (p.flock["Chicks"] + p.flock["Hens"]) > 0]
+            active_players = [p for p in self.players if p.total_chickens() > 0]
             if len(active_players) <= 1:
                 self.game_over = True
                 winner = active_players[0] if active_players else None
@@ -143,7 +150,10 @@ class Game:
                         print("All players lost their chickens simultaneously!")
                 return {"winner": winner.name if winner else "None", "turns": self.turn}
 
-            self.current_player_index = (self.current_player_index + 1) % len(self.players)
+            if self.reverse_direction:
+                self.current_player_index = (self.current_player_index - 1 + len(self.players)) % len(self.players)
+            else:
+                self.current_player_index = (self.current_player_index + 1) % len(self.players)
         return None
 
     def take_turn(self, player, silent=False):
@@ -159,9 +169,12 @@ class Game:
         
         # Step 1: Collect Eggs
         if not self.drought_active:
-            player.eggs += player.flock["Hens"]
+            fertile_hens = max(0, player.flock["Hens"] - player.infertile_hens)
+            robo_hen_eggs = player.flock["Robo-Hens"] * 2
+            collected_eggs = fertile_hens + robo_hen_eggs
+            player.eggs += collected_eggs
             if not silent:
-                print(f"{player.name} collects {player.flock['Hens']} eggs, now has {player.eggs}.")
+                print(f"{player.name} collects {collected_eggs} eggs, now has {player.eggs}.")
         else:
             if not silent:
                 print(f"{player.name} collects no eggs due to drought.")
@@ -175,10 +188,14 @@ class Game:
         # AI Logic for playing cards and spending eggs
         self.perform_ai_actions(player, silent)
 
-        self.roll_chicken_die(player, silent)
+        if not self.skip_roll:
+            self.roll_chicken_die(player, silent)
+        else:
+            # Reset for the next player
+            self.skip_roll = False
 
     def get_opponents(self, current_player):
-        return [p for p in self.players if p is not current_player and (p.flock["Chicks"] + p.flock["Hens"]) > 0]
+        return [p for p in self.players if p is not current_player and p.total_chickens() > 0]
 
     def perform_ai_actions(self, player, silent=False):
         # --- AI: Play Cards ---
@@ -206,7 +223,17 @@ class Game:
 
     def play_card(self, player, card, silent=False):
         player.hand.remove(card)
-        self.deck.discard_pile.append(card)
+        
+        CARDS_PLACED_IN_FLOCK = ["Robo-Hen", "Decoy Chick"]
+
+        if card.name in CARDS_PLACED_IN_FLOCK:
+            if card.name == "Robo-Hen":
+                player.flock["Robo-Hens"] += 1
+            elif card.name == "Decoy Chick":
+                player.flock["Decoy-Chicks"] += 1
+        else:
+            self.deck.discard_pile.append(card)
+
         if not silent:
             print(f"{player.name} plays {card.name}.")
 
@@ -216,12 +243,7 @@ class Game:
             if opponents:
                 target = random.choice(opponents)
                 if not silent: print(f"{player.name} targets {target.name} with Coyote Attack.")
-                if target.flock["Chicks"] > 0:
-                    target.flock["Chicks"] -= 1
-                    self.graveyard.append("Chick")
-                elif target.flock["Hens"] > 0:
-                    target.flock["Hens"] -= 1
-                    self.graveyard.append("Hen")
+                self._kill_a_chicken(target, silent)
         
         elif card.name == "Farm to Table":
             player.eggs += 3
@@ -294,6 +316,24 @@ class Game:
             target.eggs -= eggs_lost
             if not silent: print(f"{player.name} destroys {eggs_lost} of {target.name}'s eggs.")
 
+        elif card.name == "Infertility":
+            opponents_with_hens = [p for p in self.get_opponents(player) if p.flock["Hens"] > p.infertile_hens]
+            if opponents_with_hens:
+                target = random.choice(opponents_with_hens)
+                target.infertile_hens += 1
+                if not silent: print(f"{player.name} makes one of {target.name}'s hens infertile.")
+
+        # Personal Growth
+        elif card.name == "Incubator":
+            # AI will spend half its eggs
+            eggs_to_spend = player.eggs // 2
+            chicks_to_gain = min(eggs_to_spend // 2, self.chick_supply)
+            if chicks_to_gain > 0:
+                player.eggs -= chicks_to_gain * 2
+                player.flock["Chicks"] += chicks_to_gain
+                self.chick_supply -= chicks_to_gain
+                if not silent: print(f"{player.name} spends {chicks_to_gain * 2} eggs to gain {chicks_to_gain} chicks.")
+
         # World Altering
         elif card.name == "Demotion":
             if not silent: print("A worldwide demotion! All hens become chicks.")
@@ -334,6 +374,48 @@ class Game:
                 self.roll_chicken_die(p, silent)
                 self.roll_chicken_die(p, silent)
 
+        # Specialty Chicken
+        # Note: Robo-Hen and Decoy-Chick are handled when played
+
+        # Turn Altering
+        elif card.name == "End Your Turn":
+            if not silent: print(f"{player.name} ends their turn early.")
+            self.skip_roll = True
+
+        elif card.name == "Reverse":
+            if not silent: print("The direction of play is reversed!")
+            self.reverse_direction = not self.reverse_direction
+            self.skip_roll = True
+
+    def _kill_a_chicken(self, player, silent=False):
+        """Kills a chicken, prioritizing Decoy Chicks."""
+        # AI Check for Immunity
+        immunity_card = next((card for card in player.hand if card.name == "Immunity"), None)
+        if immunity_card:
+            player.hand.remove(immunity_card)
+            self.deck.discard_pile.append(immunity_card)
+            if not silent: print(f"{player.name} plays Immunity to save a chicken!")
+            return
+
+        if player.flock["Decoy-Chicks"] > 0:
+            player.flock["Decoy-Chicks"] -= 1
+            self.graveyard.append("Decoy-Chick")
+            if not silent: print(f"{player.name}'s Decoy Chick is destroyed!")
+        elif player.flock["Chicks"] > 0:
+            player.flock["Chicks"] -= 1
+            self.graveyard.append("Chick")
+            if not silent: print(f"{player.name} loses a Chick.")
+        elif player.flock["Hens"] > 0:
+            player.flock["Hens"] -= 1
+            self.graveyard.append("Hen")
+            if not silent: print(f"{player.name} loses a Hen.")
+        elif player.flock["Robo-Hens"] > 0:
+            player.flock["Robo-Hens"] -= 1
+            self.graveyard.append("Robo-Hen")
+            if not silent: print(f"{player.name} loses a Robo-Hen.")
+        else:
+            if not silent: print(f"{player.name} has no chickens to lose.")
+
     def roll_chicken_die(self, player, silent=False):
         roll = random.randint(1, 6)
         if not silent:
@@ -341,16 +423,7 @@ class Game:
         
         if roll <= 2: # A Chicken Dies!
             if not silent: print("Outcome: A Chicken Dies!")
-            if player.flock["Chicks"] > 0:
-                player.flock["Chicks"] -= 1
-                self.graveyard.append("Chick")
-                if not silent: print(f"{player.name} loses a Chick.")
-            elif player.flock["Hens"] > 0:
-                player.flock["Hens"] -= 1
-                self.graveyard.append("Hen")
-                if not silent: print(f"{player.name} loses a Hen.")
-            else:
-                if not silent: print(f"{player.name} has no chickens to lose.")
+            self._kill_a_chicken(player, silent)
         elif roll == 3: # Promote!
             if not silent: print("Outcome: Promote!")
             if player.flock["Chicks"] > 0 and self.hen_supply > 0:
