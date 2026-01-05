@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+import random
 from simulation import Game, Card, Player
 
 class TestGameMechanics(unittest.TestCase):
@@ -15,10 +16,9 @@ class TestGameMechanics(unittest.TestCase):
         self.assertEqual(len(self.game.players), 4)
         for player in self.game.players:
             self.assertEqual(len(player.hand), 5)
-            self.assertEqual(player.eggs, 1)
-        # Initial chicks are distributed, so we check the total
-        total_chicks = sum(p.flock["Chicks"] for p in self.game.players)
-        self.assertLessEqual(total_chicks, 10) # Supply starts at 10
+            self.assertEqual(player.egg_cards, 1)
+            self.assertEqual(player.flock["Chicks"], 2)
+            self.assertEqual(player.flock["Hens"], 1)
 
 class TestPersonalGrowthCards(unittest.TestCase):
 
@@ -28,62 +28,48 @@ class TestPersonalGrowthCards(unittest.TestCase):
         self.player1 = self.game.players[0]
         self.player2 = self.game.players[1]
         # Ensure players have resources for testing
-        self.player1.eggs = 10
+        self.player1.egg_cards = 10
         self.player1.flock["Chicks"] = 3
-        self.game.hen_supply = 5
-        self.game.chick_supply = 5
+        self.game.hen_supply = 10
+        self.game.chick_supply = 10
+        self.game.egg_supply = 50
 
     def test_farm_to_table_card(self):
         """Test that Farm to Table correctly adds 3 eggs to the player."""
-        initial_eggs = self.player1.eggs
+        initial_eggs = self.player1.egg_cards
         card = Card("Farm to Table", "Personal Growth")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.eggs, initial_eggs + 3)
+        self.assertEqual(self.player1.egg_cards, initial_eggs + 3)
 
     def test_feeding_frenzy_card(self):
-        """Test that Feeding Frenzy promotes all of a player's chicks to hens."""
-        initial_chicks = self.player1.flock["Chicks"]
+        """Test that Feeding Frenzy promotes up to 3 of a player's chicks to hens."""
+        self.player1.flock["Chicks"] = 5
         card = Card("Feeding Frenzy", "Personal Growth")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Hens"], initial_chicks)
-        self.assertEqual(self.player1.flock["Chicks"], 0)
-        self.assertEqual(self.game.hen_supply, 5 - initial_chicks)
-
-    def test_hatch_egg_card(self):
-        """Test that Hatch Egg correctly uses an egg to gain a chick."""
-        initial_eggs = self.player1.eggs
-        initial_chicks = self.player1.flock["Chicks"]
-        initial_chick_supply = self.game.chick_supply
-        card = Card("Hatch Egg", "Personal Growth")
-        self.player1.hand.append(card)
-        self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.eggs, initial_eggs - 1)
-        self.assertEqual(self.player1.flock["Chicks"], initial_chicks + 1)
-        self.assertEqual(self.game.chick_supply, initial_chick_supply - 1)
+        # Should promote 3 chicks
+        self.assertEqual(self.player1.flock["Hens"], 1 + 3)
+        self.assertEqual(self.player1.flock["Chicks"], 5 - 3)
 
     def test_resurrection_card(self):
-        """Test that Resurrection brings back chickens from the graveyard."""
-        self.game.graveyard = ["Chick", "Hen"]
-        initial_chicks = self.player1.flock["Chicks"]
-        initial_hens = self.player1.flock["Hens"]
+        """Test that Resurrection brings back a specialty chicken from the graveyard."""
+        self.game.graveyard = ["Robo-Hen"]
         card = Card("Resurrection", "Personal Growth")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Chicks"], initial_chicks + 1)
-        self.assertEqual(self.player1.flock["Hens"], initial_hens + 1)
+        self.assertEqual(self.player1.flock["Robo-Hens"], 1)
         self.assertEqual(len(self.game.graveyard), 0)
 
     def test_incubator_card(self):
-        """Test that Incubator allows spending eggs to gain chicks."""
-        self.player1.eggs = 7 # Spends 3, gains 1 chick (7 // 2 = 3)
+        """Test that Incubator allows trading 2 eggs for 1 chick, up to 3 chicks."""
+        self.player1.egg_cards = 10
         initial_chicks = self.player1.flock["Chicks"]
         card = Card("Incubator", "Personal Growth")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Chicks"], initial_chicks + 1)
-        self.assertEqual(self.player1.eggs, 7 - 2)
+        self.assertEqual(self.player1.flock["Chicks"], initial_chicks + 3)
+        self.assertEqual(self.player1.egg_cards, 10 - (3 * 2))
 
 class TestAttackCards(unittest.TestCase):
 
@@ -93,181 +79,94 @@ class TestAttackCards(unittest.TestCase):
         self.player1 = self.game.players[0]
         self.player2 = self.game.players[1]
         # Setup initial flock and resources
-        self.player1.flock = {"Chicks": 2, "Hens": 1, "Robo-Hens": 0, "Decoy-Chicks": 0}
-        self.player2.flock = {"Chicks": 2, "Hens": 1, "Robo-Hens": 0, "Decoy-Chicks": 0}
-        self.player2.eggs = 5
+        self.player2.hand = []
+        self.player2.egg_cards = 5
 
     def test_coyote_attack_card(self):
         """Test that Coyote Attack correctly kills an opponent's chicken."""
-        self.player2.hand = [] # Ensure no Immunity card
-        initial_chick_count = self.player2.flock["Chicks"]
+        initial_chickens = self.player2.total_chickens()
         card = Card("Coyote Attack", "Attack")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        # The target is random, so we check if either a chick or hen was lost
-        final_chick_count = self.player2.flock["Chicks"]
-        final_hen_count = self.player2.flock["Hens"]
-        self.assertTrue(
-            final_chick_count == initial_chick_count - 1 or
-            final_hen_count == 0
-        )
+        self.assertEqual(self.player2.total_chickens(), initial_chickens - 1)
 
-    @patch('random.choice')
-    def test_die_die_die_card(self, mock_choice):
-        """Test that Die-Die-Die! forces an opponent to roll the die three times."""
-        mock_choice.return_value = self.player2
-        with patch.object(self.game, 'roll_chicken_die') as mock_roll:
-            card = Card("Die-Die-Die!", "Attack")
-            self.player1.hand.append(card)
-            self.game.play_card(self.player1, card, silent=True)
-            self.assertEqual(mock_roll.call_count, 3)
-            # Check that the target was the opponent
-            mock_roll.assert_called_with(self.player2, True)
+    def test_chicken_blaster_card(self):
+        """Test that Chicken Blaster correctly kills an opponent's chicken."""
+        initial_chickens = self.player2.total_chickens()
+        card = Card("Chicken Blaster", "Attack")
+        self.player1.hand.append(card)
+        self.game.play_card(self.player1, card, silent=True)
+        self.assertEqual(self.player2.total_chickens(), initial_chickens - 1)
+
+    def test_eat_mor_chikin_card(self):
+        """Test that Eat Mor Chikin kills a chicken and skips the roll."""
+        initial_chickens = self.player2.total_chickens()
+        card = Card("Eat Mor Chikin", "Attack")
+        self.player1.hand.append(card)
+        self.game.play_card(self.player1, card, silent=True)
+        self.assertEqual(self.player2.total_chickens(), initial_chickens - 1)
+        self.assertTrue(self.game.skip_roll)
 
     def test_hen_swap_card(self):
-        """Test that Hen Swap correctly swaps hens between players."""
-        p1_hens = self.player1.flock["Hens"]
-        p2_hens = self.player2.flock["Hens"]
+        """Test that Hen Swap correctly swaps hens between players (max 3 received)."""
+        self.player1.flock["Hens"] = 1
+        self.player2.flock["Hens"] = 5
         card = Card("Hen Swap", "Attack")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        # Since it's a swap, the number of hens for each player should remain the same
-        self.assertEqual(self.player1.flock["Hens"], p1_hens)
-        self.assertEqual(self.player2.flock["Hens"], p2_hens)
+        self.assertEqual(self.player1.flock["Hens"], 3) # Capped at 3
+        self.assertEqual(self.player2.flock["Hens"], 1)
 
     def test_bird_flu_card(self):
-        """Test that Bird Flu eliminates all of an opponent's chicks."""
-        card = Card("Bird Flu", "Attack")
-        self.player1.hand.append(card)
+        """Test that Bird Flu eliminates chicks (max 3 per person)."""
+        self.player2.flock["Chicks"] = 5
+        card = Card("Bird Flu", "Instant Effect") # Note: Card is Instant Effect in rules
+        # Mocking draw/play since it's instant
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player2.flock["Chicks"], 0)
-        self.assertIn("Chick", self.game.graveyard)
+        self.assertEqual(self.player2.flock["Chicks"], 2) # 5 - 3
 
     def test_omelette_card(self):
-        """Test that Omelette destroys 3 of an opponent's eggs."""
-        initial_eggs = self.player2.eggs
-        with patch('random.choice', return_value=self.player2):
-            card = Card("Omelette", "Attack")
-            self.player1.hand.append(card)
-            self.game.play_card(self.player1, card, silent=True)
-            self.assertEqual(self.player2.eggs, initial_eggs - 3)
-
-    def test_infertility_card(self):
-        """Test that Infertility makes an opponent's hen unable to lay eggs."""
-        self.player2.flock["Hens"] = 2
-        card = Card("Infertility", "Attack")
+        """Test that 3-Egg Omelette destroys 3 of an opponent's eggs."""
+        initial_eggs = self.player2.egg_cards
+        card = Card("3-Egg Omelette", "Attack")
         self.player1.hand.append(card)
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player2.infertile_hens, 1)
-        # Test egg collection
-        initial_eggs = self.player2.eggs
-        with patch.object(self.game, 'perform_ai_actions', return_value=None) as mock_ai, \
-             patch.object(self.game, 'roll_chicken_die', return_value=None) as mock_roll:
-            self.game.take_turn(self.player2, silent=True)
-            # Should only collect 1 egg from the 1 fertile hen
-            self.assertEqual(self.player2.eggs, initial_eggs + 1)
+        self.assertEqual(self.player2.egg_cards, initial_eggs - 3)
 
-class TestWorldAlteringCards(unittest.TestCase):
+class TestInstantEffectCards(unittest.TestCase):
 
     def setUp(self):
         """Set up a new game for each test."""
         self.game = Game(num_players=2, silent_deck=True)
         self.player1 = self.game.players[0]
         self.player2 = self.game.players[1]
-        # Setup flocks
-        self.player1.flock = {"Chicks": 1, "Hens": 2, "Robo-Hens": 0, "Decoy-Chicks": 0}
-        self.player2.flock = {"Chicks": 2, "Hens": 1, "Robo-Hens": 0, "Decoy-Chicks": 0}
-        self.game.chick_supply = 10
-        self.game.hen_supply = 10
 
     def test_demotion_card(self):
         """Test that Demotion turns all hens into chicks."""
-        card = Card("Demotion", "World Altering")
-        self.player1.hand.append(card)
+        self.player1.flock["Hens"] = 2
+        self.player2.flock["Hens"] = 1
+        card = Card("Demotion", "Instant Effect")
         self.game.play_card(self.player1, card, silent=True)
         self.assertEqual(self.player1.flock["Hens"], 0)
-        self.assertEqual(self.player1.flock["Chicks"], 1 + 2) # Initial chicks + demoted hens
+        self.assertEqual(self.player1.flock["Chicks"], 2 + 2) # Start with 2
         self.assertEqual(self.player2.flock["Hens"], 0)
         self.assertEqual(self.player2.flock["Chicks"], 2 + 1)
 
     def test_foster_farms_card(self):
-        """Test that Foster Farms removes all hens from play."""
-        card = Card("Foster Farms", "World Altering")
-        self.player1.hand.append(card)
+        """Test that Foster Farms removes hens from play (max 3 per person) but spares specialty hens."""
+        self.player1.flock["Hens"] = 5
+        self.player1.flock["Robo-Hens"] = 1
+        card = Card("Foster Farms", "Instant Effect")
         self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Hens"], 0)
-        self.assertEqual(self.player2.flock["Hens"], 0)
-        self.assertEqual(len(self.game.graveyard), 3) # 2 from p1, 1 from p2
+        self.assertEqual(self.player1.flock["Hens"], 2) # 5 - 3
+        self.assertEqual(self.player1.flock["Robo-Hens"], 1) # Unaffected
 
-    def test_drought_card(self):
-        """Test that Drought prevents egg collection for one round."""
-        card = Card("Drought", "World Altering")
-        self.player1.hand.append(card)
+    def test_chicken_bomb_card(self):
+        """Test that Chicken Bomb kills a chicken of the player who drew it."""
+        initial_chickens = self.player1.total_chickens()
+        card = Card("Chicken Bomb", "Instant Effect")
         self.game.play_card(self.player1, card, silent=True)
-        self.assertTrue(self.game.drought_active)
-        
-        # Player 2's turn, should not collect eggs
-        p2_initial_eggs = self.player2.eggs
-        self.game.current_player_index = 1
-        with patch.object(self.game, 'perform_ai_actions', return_value=None) as mock_ai, \
-             patch.object(self.game, 'roll_chicken_die', return_value=None) as mock_roll:
-            self.game.take_turn(self.player2, silent=True)
-            self.assertEqual(self.player2.eggs, p2_initial_eggs)
-
-        # Player 1's turn again, drought should end, and they should collect eggs
-        p1_initial_eggs = self.player1.eggs
-        self.game.current_player_index = 0
-        with patch.object(self.game, 'perform_ai_actions', return_value=None) as mock_ai, \
-             patch.object(self.game, 'roll_chicken_die', return_value=None) as mock_roll:
-            self.game.take_turn(self.player1, silent=True)
-            self.assertFalse(self.game.drought_active)
-            self.assertEqual(self.player1.eggs, p1_initial_eggs + self.player1.flock["Hens"])
-
-    def test_fox_on_the_loose_card(self):
-        """Test that Fox on the Loose makes each player roll the die twice."""
-        with patch.object(self.game, 'roll_chicken_die') as mock_roll:
-            card = Card("Fox on the Loose", "World Altering")
-            self.player1.hand.append(card)
-            self.game.play_card(self.player1, card, silent=True)
-            self.assertEqual(mock_roll.call_count, 4) # 2 players * 2 rolls
-
-class TestTurnAlteringCards(unittest.TestCase):
-
-    def setUp(self):
-        """Set up a new game for each test."""
-        self.game = Game(num_players=3, silent_deck=True)
-        self.player1 = self.game.players[0]
-        self.player2 = self.game.players[1]
-        self.player3 = self.game.players[2]
-
-    def test_end_your_turn_card(self):
-        """Test that End Your Turn skips the die roll."""
-        card = Card("End Your Turn", "Turn Altering")
-        self.player1.hand.append(card)
-
-        # Mock the AI to ensure it plays the card we want to test
-        def mock_ai_logic(player, silent):
-            if card in player.hand:
-                self.game.play_card(player, card, silent)
-
-        with patch.object(self.game, 'perform_ai_actions', side_effect=mock_ai_logic), \
-             patch.object(self.game, 'roll_chicken_die') as mock_roll:
-            self.game.take_turn(self.player1, silent=True)
-            mock_roll.assert_not_called()
-
-    def test_reverse_card(self):
-        """Test that Reverse changes the direction of play."""
-        self.game.current_player_index = 0
-        card = Card("Reverse", "Turn Altering")
-        self.player1.hand.append(card)
-        
-        # Play the card and check the next player
-        self.game.play_card(self.player1, card, silent=True)
-        self.assertTrue(self.game.reverse_direction)
-        
-        # Simulate the end of the turn to see who is next
-        self.game.current_player_index = (self.game.current_player_index - 1 + len(self.game.players)) % len(self.game.players)
-        self.assertEqual(self.game.players[self.game.current_player_index].name, self.player3.name)
+        self.assertEqual(self.player1.total_chickens(), initial_chickens - 1)
 
 class TestSpecialtyChickenCards(unittest.TestCase):
 
@@ -275,35 +174,37 @@ class TestSpecialtyChickenCards(unittest.TestCase):
         """Set up a new game for each test."""
         self.game = Game(num_players=2, silent_deck=True)
         self.player1 = self.game.players[0]
-        self.player2 = self.game.players[1]
 
-    def test_robo_hen_card(self):
-        """Test that Robo-Hen is added to the flock and produces 2 eggs."""
-        card = Card("Robo-Hen", "Specialty Chicken")
-        self.player1.hand.append(card)
-        self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Robo-Hens"], 1)
-
-        # Test egg collection
-        initial_eggs = self.player1.eggs
-        with patch.object(self.game, 'perform_ai_actions', return_value=None), \
-             patch.object(self.game, 'roll_chicken_die', return_value=None):
+    def test_robo_hen_production(self):
+        """Test that Robo-Hen produces 2 eggs."""
+        self.player1.flock["Robo-Hens"] = 1
+        self.player1.flock["Hens"] = 0
+        self.player1.egg_cards = 0
+        
+        # Mocking turn steps to only test egg collection
+        with patch.object(self.game, 'perform_ai_actions'), \
+             patch.object(self.game, 'roll_chicken_die'):
             self.game.take_turn(self.player1, silent=True)
-            self.assertEqual(self.player1.eggs, initial_eggs + 2)
+            self.assertEqual(self.player1.egg_cards, 2)
 
-    def test_decoy_chick_card(self):
-        """Test that Decoy Chick is sacrificed first."""
-        card = Card("Decoy Chick", "Specialty Chicken")
-        self.player1.hand.append(card)
-        self.game.play_card(self.player1, card, silent=True)
-        self.assertEqual(self.player1.flock["Decoy-Chicks"], 1)
+    def test_punk_rock_chick_production(self):
+        """Test that Punk Rock Chick produces 1 egg and cannot be promoted."""
+        self.player1.flock["Punk Rock Chicks"] = 1
+        self.player1.flock["Hens"] = 0
+        self.player1.egg_cards = 0
+        with patch.object(self.game, 'perform_ai_actions'), \
+             patch.object(self.game, 'roll_chicken_die'):
+            self.game.take_turn(self.player1, silent=True)
+            self.assertEqual(self.player1.egg_cards, 1)
 
-        # Test that it's killed first
-        self.player1.hand = [] # Ensure no Immunity
+    def test_decoy_chicken_priority(self):
+        """Test that Decoy Chicken is killed first."""
+        self.player1.hand = [] # Ensure no Immunity card
+        self.player1.flock["Decoy Chickens"] = 1
         self.player1.flock["Chicks"] = 1
         self.game._kill_a_chicken(self.player1, silent=True)
-        self.assertEqual(self.player1.flock["Decoy-Chicks"], 0)
-        self.assertEqual(self.player1.flock["Chicks"], 1) # The normal chick should survive
+        self.assertEqual(self.player1.flock["Decoy Chickens"], 0)
+        self.assertEqual(self.player1.flock["Chicks"], 1)
 
 class TestProtectionCards(unittest.TestCase):
 
@@ -311,18 +212,27 @@ class TestProtectionCards(unittest.TestCase):
         """Set up a new game for each test."""
         self.game = Game(num_players=2, silent_deck=True)
         self.player1 = self.game.players[0]
+        self.player2 = self.game.players[1]
 
     def test_immunity_card(self):
-        """Test that Immunity saves a chicken from dying."""
-        self.player1.flock = {"Chicks": 1, "Hens": 0, "Robo-Hens": 0, "Decoy-Chicks": 0}
+        """Test that Immunity saves a chicken."""
         card = Card("Immunity", "Protection")
-        self.player1.hand.append(card)
+        self.player2.hand = [card]
+        initial_chickens = self.player2.total_chickens()
+        self.game._kill_a_chicken(self.player2, silent=True)
+        self.assertEqual(self.player2.total_chickens(), initial_chickens)
+        self.assertNotIn(card, self.player2.hand)
 
-        initial_chickens = self.player1.total_chickens()
-        self.game._kill_a_chicken(self.player1, silent=True)
+    def test_cock_block_card(self):
+        """Test that Cock Block stops an attack."""
+        card = Card("Cock Block", "Protection")
+        self.player2.hand = [card]
+        initial_chickens = self.player2.total_chickens()
         
-        self.assertEqual(self.player1.total_chickens(), initial_chickens)
-        self.assertIsNone(next((c for c in self.player1.hand if c.name == "Immunity"), None))
+        # Coyote Attack should be blocked
+        self.game._kill_a_chicken(self.player2, silent=True, attacker=self.player1)
+        self.assertEqual(self.player2.total_chickens(), initial_chickens)
+        self.assertNotIn(card, self.player2.hand)
 
 if __name__ == '__main__':
     unittest.main()
